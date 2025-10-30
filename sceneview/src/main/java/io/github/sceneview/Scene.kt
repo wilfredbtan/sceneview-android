@@ -247,6 +247,15 @@ fun Scene(
             },
             onReset = {},
             onRelease = { sceneView ->
+                // 1) Detach everything from the Filament Scene first
+                runCatching { sceneView.clearChildNodes() }
+
+                // 2) If you attached Android Views via ViewNode2, make sure their WindowManager is torn down
+                // (this also removes the hidden FrameLayout window)
+                runCatching { sceneView.viewNodeWindowManager?.destroy() }
+                sceneView.viewNodeWindowManager = null
+
+                // 3) Finally destroy the SceneView (destroys View, Scene, Renderer, loaders…)
                 sceneView.destroy()
             }
         )

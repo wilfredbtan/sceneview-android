@@ -59,7 +59,7 @@ class Cube private constructor(
         center: Position = this.center,
         size: Size = this.size
     ) = apply {
-        update(engine = engine, vertices = getVertices(center, size))
+        update(engine = engine, vertices = getVertices(size, center))
 
         this.center = center
         this.size = size
