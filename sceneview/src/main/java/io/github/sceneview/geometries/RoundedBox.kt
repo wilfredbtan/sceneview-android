@@ -122,10 +122,15 @@ class RoundedBox private constructor(
         const val DEFAULT_SEGMENT_COUNT = 64
 
         /**
-         * Returns vertex list:
-         *  - side wall strip (two per arc step)
-         *  - bottom cap ring + center
-         *  - top cap ring + center
+         * Generates the vertices for the Rounded Box.
+         * Layout (unchanged from your version):
+         *  - Side ring packed as [top, bottom] per step around the rounded-rect.
+         *  - Then bottom-cap ring (+ center).
+         *  - Then top-cap ring (+ center).
+         *
+         * Notes:
+         *  - Keeps your Y signs and normals identical to your current implementation.
+         *  - Avoids duplicate normalize() calls and reduces allocations.
          */
         fun getVertices(
             width: Float,
@@ -140,70 +145,96 @@ class RoundedBox private constructor(
             val rectD = (depth / 2f) - clamped
             val step = PI / 2.0 / segmentCount
 
-            val bottomCap = mutableListOf<Vertex>()
-            val topCap = mutableListOf<Vertex>()
-            val side = mutableListOf<Vertex>()
+            // Ring has 4 corners * (segmentCount+1) samples (incl. duplicate at each corner end)
+            val ringSteps = 4 * (segmentCount + 1)
 
+            // Pre-size to avoid reallocations
+            val side = ArrayList<Vertex>(ringSteps * 2)          // [top, bottom] per step
+            val bottomCap = ArrayList<Vertex>(ringSteps + 1)     // ring + center
+            val topCap = ArrayList<Vertex>(ringSteps + 1)        // ring + center
+
+            var ringIndex = 0
             for (corner in 0 until 4) {
                 val baseAngle = corner * (PI / 2.0)
                 val baseX = if (corner == 0 || corner == 3) rectW else -rectW
                 val baseZ = if (corner < 2) -rectD else rectD
 
+                // Include segmentCount itself, so the ring has duplicate at the corner end
                 for (i in 0..segmentCount) {
                     val a = -(baseAngle + i * step)
-                    val x = baseX + clamped * cos(a).toFloat()
-                    val z = baseZ + clamped * sin(a).toFloat()
+                    val cosA = cos(a).toFloat()
+                    val sinA = sin(a).toFloat()
 
+                    val x = baseX + clamped * cosA
+                    val z = baseZ + clamped * sinA
+
+                    // Caps (keep your original Y signs / normals)
                     bottomCap += Vertex(
-                        position = Position(x, half, z),
-                        normal = Direction(0f, 1f, 0f)
+                        position = Position(x, +half, z),
+                        normal = Direction(0f, +1f, 0f)
                     )
                     topCap += Vertex(
                         position = Position(x, -half, z),
                         normal = Direction(0f, -1f, 0f)
                     )
 
+                    // Side: [top, bottom] per step (keep order)
                     val n = normalize(Direction(x, 0f, z))
-                    side += Vertex(position = Position(x, half, z), normal = n)
+                    side += Vertex(position = Position(x, +half, z), normal = n)
                     side += Vertex(position = Position(x, -half, z), normal = n)
+
+                    ringIndex++
                 }
             }
 
-            bottomCap += Vertex(position = Position(0f, half, 0f), normal = Direction(0f, 1f, 0f))
+            // Cap centers (keep your original Y signs / normals)
+            bottomCap += Vertex(position = Position(0f, +half, 0f), normal = Direction(0f, +1f, 0f))
             topCap += Vertex(position = Position(0f, -half, 0f), normal = Direction(0f, -1f, 0f))
 
             return side + bottomCap + topCap
         }
 
         /**
-         * Triangles for sides and caps.
+         * Generates the indices for the RoundedBox.
+         * Matches the vertex packing above:
+         *  - sides connect step s -> s+1 (wrapping) using [top, bottom] pairing.
+         *  - bottom cap fan over its ring (then center).
+         *  - top cap fan over its ring (then center).
          */
         fun getIndices(segmentCount: Int): List<List<Int>> {
             val out = mutableListOf<List<Int>>()
-            val edgeCount = 8 * (segmentCount + 1)
-            val capCount = 4 * (segmentCount + 1) + 1
 
-            val bottomOffset = edgeCount
-            val topOffset = bottomOffset + capCount
+            val ringSteps =
+                4 * (segmentCount + 1)   // samples around the ring (incl. per-corner duplicates)
+            val sideVertexCount = 2 * ringSteps      // [top, bottom] per step
+            val bottomOffset = sideVertexCount
+            val capRingCount = ringSteps + 1         // ring + center
+            val topOffset = bottomOffset + capRingCount
 
-            // Sides
-            for (i in 0 until edgeCount - 2 step 4) {
-                val next = (i + 4) % edgeCount
-                out += listOf(i, i + 1, next + 1)
-                out += listOf(i, next + 1, next)
+            // --- Sides
+            for (s in 0 until ringSteps) {
+                val sNext = (s + 1) % ringSteps
+
+                val topL = 2 * s + 0
+                val botL = 2 * s + 1
+                val topR = 2 * sNext + 0
+                val botR = 2 * sNext + 1
+
+                out += listOf(topL, botL, botR)
+                out += listOf(topL, botR, topR)
             }
 
-            // Bottom cap fan
-            val bottomCenter = bottomOffset + capCount - 1
-            for (i in 0 until capCount - 1) {
-                val n = (i + 1) % (capCount - 1)
+            // --- Bottom cap fan (wrap with modulo!)
+            val bottomCenter = bottomOffset + capRingCount - 1
+            for (i in 0 until capRingCount - 1) {
+                val n = (i + 1) % (capRingCount - 1)
                 out += listOf(bottomCenter, bottomOffset + i, bottomOffset + n)
             }
 
-            // Top cap fan
-            val topCenter = topOffset + capCount - 1
-            for (i in 0 until capCount - 1) {
-                val n = (i + 1) % (capCount - 1)
+            // --- Top cap fan (wrap with modulo!)
+            val topCenter = topOffset + capRingCount - 1
+            for (i in 0 until capRingCount - 1) {
+                val n = (i + 1) % (capRingCount - 1)
                 out += listOf(topCenter, topOffset + i, topOffset + n)
             }
 

@@ -80,8 +80,13 @@ class EllipticCylinderNode private constructor(
         builderApply = builderApply
     )
 
+
     /**
      * Update the cylinder parameters and push new buffers to Filament.
+     *
+     * - If only size/center change, we just `geometry.update(...)` (no topology change) — fast path.
+     * - If `sideCount` changes (topology change), we call `setGeometry(geometry)` and
+     *   re-bind materials across the new primitive layout so the mesh doesn't "disappear".
      */
     fun updateGeometry(
         width: Float = geometry.width,
@@ -89,14 +94,57 @@ class EllipticCylinderNode private constructor(
         height: Float = geometry.height,
         center: Position = geometry.center,
         sideCount: Int = geometry.sideCount
-    ) = setGeometry(
+    ) {
+        val topologyChanges = (sideCount != geometry.sideCount)
+
+        // Update CPU data / GPU buffers (preserves primitives if topology unchanged)
         geometry.update(
-            engine,
+            engine = engine,
             width = width,
             depth = depth,
             height = height,
             center = center,
             sideCount = sideCount
         )
-    )
+
+        if (!topologyChanges) {
+            // No primitive-count change -> the currently bound materials remain valid
+            return
+        }
+
+        // --- Topology changed: primitives will be recreated by setGeometry(geometry).
+        // Snapshot currently bound material instances (if any) to reapply afterward.
+        val rm = engine.renderableManager
+        val instBefore = rm.getInstance(entity)
+        val oldPrimCount = if (instBefore != 0) rm.getPrimitiveCount(instBefore) else 0
+        val oldMIs: List<MaterialInstance> =
+            if (oldPrimCount > 0) List(oldPrimCount) { i ->
+                rm.getMaterialInstanceAt(
+                    instBefore,
+                    i
+                )
+            }
+            else emptyList()
+
+        // Apply the new geometry layout
+        setGeometry(geometry)
+
+        // Re-bind materials to all new primitives so nothing renders invisible.
+        val instAfter = rm.getInstance(entity)
+        val newPrimCount = if (instAfter != 0) rm.getPrimitiveCount(instAfter) else 0
+        if (newPrimCount > 0 && oldMIs.isNotEmpty()) {
+            when {
+                // If you had a single material, spread it across all primitives.
+                oldMIs.size == 1 -> setMaterialInstances(oldMIs[0])
+
+                // If counts match, re-apply one-for-one.
+                oldMIs.size == newPrimCount -> {
+                    oldMIs.forEachIndexed { i, mi -> setMaterialInstanceAt(i, mi) }
+                }
+
+                // Fallback: spread the first MI across all primitives.
+                else -> setMaterialInstances(oldMIs[0])
+            }
+        }
+    }
 }

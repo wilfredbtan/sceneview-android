@@ -123,10 +123,13 @@ class EllipticCylinder private constructor(
         const val DEFAULT_SIDE_COUNT = 64
 
         /**
-         * Vertex layout:
-         *  - side ring as degenerate strip pairs (bottom, top).
-         *  - bottom cap ring + center.
-         *  - top   cap ring + center.
+         * Generates the vertices for the elliptic cylinder.
+         * @param width The width of the cylinder.
+         * @param depth The depth of the cylinder.
+         * @param height The height of the cylinder.
+         * @param center The center position of the cylinder.
+         * @param sideCount The number of segments around the cylinder.
+         * @return A list of vertices for the geometry.
          */
         fun getVertices(
             width: Float,
@@ -135,48 +138,44 @@ class EllipticCylinder private constructor(
             center: Position,
             sideCount: Int
         ): List<Vertex> {
-            val halfHeight = height / 2f
-            val thetaInc = TWO_PI / sideCount
-            val side = mutableListOf<Vertex>()
-            val bottomCap = mutableListOf<Vertex>()
-            val topCap = mutableListOf<Vertex>()
+            val half = height / 2f
+            val theta = (2.0 * Math.PI / sideCount).toFloat()
+
+            val side = mutableListOf<Vertex>()       // [bottom, top] per step
+            val bottomCap = mutableListOf<Vertex>()  // ring at y = -half
+            val topCap = mutableListOf<Vertex>()     // ring at y = +half
 
             for (i in 0..sideCount) {
-                val a = i * thetaInc
+                val a = i * theta
                 val x = (width / 2f) * cos(a)
                 val z = (depth / 2f) * sin(a)
 
-                val pBottom = Position(center.x + x, center.y - halfHeight, center.z + z)
-                val pTop = Position(center.x + x, center.y + halfHeight, center.z + z)
+                val pB = Position(center.x + x, center.y - half, center.z + z)
+                val pT = Position(center.x + x, center.y + half, center.z + z)
 
-                // Normal for ellipse: (x/a^2, 0, z/b^2) normalized
+                // Ellipse-normal approximation: (x/a^2, 0, z/b^2) normalized
                 val n = normalize(Direction(2f * x / width, 0f, 2f * z / depth))
 
-                side += Vertex(position = pBottom, normal = n, uvCoordinate = UvCoordinate(i.toFloat() / sideCount, 0f))
-                side += Vertex(position = pTop, normal = n, uvCoordinate = UvCoordinate(i.toFloat() / sideCount, 1f))
+                // Side ring [bottom, top]
+                side += Vertex(pB, n, UvCoordinate(i.toFloat() / sideCount, 0f))
+                side += Vertex(pT, n, UvCoordinate(i.toFloat() / sideCount, 1f))
 
                 // Caps
-                bottomCap += Vertex(
-                    position = pBottom,
-                    normal = Direction(0f, -1f, 0f),
-                    uvCoordinate = UvCoordinate((cos(a) + 1f) / 2f, (sin(a) + 1f) / 2f)
-                )
-                topCap += Vertex(
-                    position = pTop,
-                    normal = Direction(0f, 1f, 0f),
-                    uvCoordinate = UvCoordinate((cos(a) + 1f) / 2f, (sin(a) + 1f) / 2f)
-                )
+                val uCap = (cos(a) + 1f) * 0.5f
+                val vCap = (sin(a) + 1f) * 0.5f
+                bottomCap += Vertex(pB, Direction(0f, -1f, 0f), UvCoordinate(uCap, vCap))
+                topCap += Vertex(pT, Direction(0f, +1f, 0f), UvCoordinate(uCap, vCap))
             }
 
             // Centers
             bottomCap += Vertex(
-                position = Position(center.x, center.y - halfHeight, center.z),
+                position = Position(center.x, center.y - half, center.z),
                 normal = Direction(0f, -1f, 0f),
                 uvCoordinate = UvCoordinate(0.5f, 0.5f)
             )
             topCap += Vertex(
-                position = Position(center.x, center.y + halfHeight, center.z),
-                normal = Direction(0f, 1f, 0f),
+                position = Position(center.x, center.y + half, center.z),
+                normal = Direction(0f, +1f, 0f),
                 uvCoordinate = UvCoordinate(0.5f, 0.5f)
             )
 
@@ -184,38 +183,44 @@ class EllipticCylinder private constructor(
         }
 
         /**
-         * Index groups for sides + bottom cap + top cap.
+         * Generates the indices for the elliptic cylinder.
+         * @param sideCount The number of segments around the cylinder.
+         * @return A list of index groups for the geometry.
          */
         fun getIndices(sideCount: Int): List<List<Int>> {
             val out = mutableListOf<List<Int>>()
-            val lowerCapOffset = (sideCount + 1) * 2
-            val upperCapOffset = lowerCapOffset + sideCount + 1
 
-            // Sides (two triangles per quad)
+            val sideVerts = (sideCount + 1) * 2
+            val bottomOffset = sideVerts
+            val bottomRingCount = sideCount + 1
+            val topOffset = bottomOffset + bottomRingCount
+
+            // Sides: quads along the ring (use i..i+1; last step uses the duplicated vertex)
             for (i in 0 until sideCount) {
-                val bl = i * 2
-                val br = bl + 2
-                val tl = bl + 1
-                val tr = br + 1
-                out += listOf(bl, tr, br)
-                out += listOf(bl, tl, tr)
+                val bl = 2 * i + 0
+                val tl = 2 * i + 1
+                val br = 2 * (i + 1) + 0
+                val tr = 2 * (i + 1) + 1
+                out += listOf(tl, tr, br)
+                out += listOf(tl, br, bl)
             }
 
-            // Bottom cap (fan)
-            val bottomCenter = lowerCapOffset + sideCount
-            for (i in 0 until sideCount) {
-                val next = (i + 1) % sideCount
-                out += listOf(bottomCenter, lowerCapOffset + i, lowerCapOffset + next)
+            // Bottom cap fan (ring + center)
+            val bottomCenter = bottomOffset + bottomRingCount - 1
+            for (i in 0 until bottomRingCount - 1) {
+                val n = i + 1 // no modulo
+                out += listOf(bottomCenter, bottomOffset + i, bottomOffset + n)
             }
 
-            // Top cap (fan)
-            val topCenter = upperCapOffset + sideCount
-            for (i in 0 until sideCount) {
-                val next = (i + 1) % sideCount
-                out += listOf(topCenter, upperCapOffset + next, upperCapOffset + i)
+            // Top cap fan (ring + center)
+            val topCenter = topOffset + bottomRingCount - 1
+            for (i in 0 until bottomRingCount - 1) {
+                val n = i + 1 // no modulo
+                out += listOf(topCenter, topOffset + n, topOffset + i)
             }
 
             return out
         }
+
     }
 }
